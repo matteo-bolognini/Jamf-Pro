@@ -56,7 +56,7 @@ def lambda_handler(event, context):
     data = resp.json()
     token = data["token"]
     
-    url = f"https://{jamf_url}.jamfcloud.com/api/v1/cloud-idp/1002/test-user-membership"
+    url = f"https://{jamf_url}.jamfcloud.com/api/v1/cloud-idp/1001/test-user-membership"
     payload = {
         "username": f"{user_name}@{domain}",
         "groupname": f"{control_group}"
