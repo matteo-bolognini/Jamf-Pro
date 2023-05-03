@@ -8,7 +8,7 @@ import datetime
 
 
 SLACK_API_TOKEN = ""
-CHANNEL_NAME = "s"
+CHANNEL_NAME = ""
 SLACK_API_URL = ""
 
 jamf_url = ""
