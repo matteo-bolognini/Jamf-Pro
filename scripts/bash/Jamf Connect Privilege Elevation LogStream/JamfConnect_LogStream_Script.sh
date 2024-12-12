@@ -33,11 +33,11 @@ fi
 
 # Collect Jamf Connect Daemon Elevation Logs
 echo "Collecting Jamf Connect Daemon Elevation Logs..."
-log show --debug --info --style compact --predicate '(subsystem == "com.jamf.connect.daemon") && (category == "PrivilegeElevation")' >> "$path/Connect_Daemon_Elevation_Logs.txt"
+log show --debug --info --style compact --predicate '(subsystem == "com.jamf.connect.daemon") && (category == "PrivilegeElevation")' --last 60m >> "$path/Connect_Daemon_Elevation_Logs.txt"
 
 # Collect Jamf Connect Menubar Elevation Logs
 echo "Collecting Jamf Connect Menubar Elevation Logs..."
-log show --debug --info --style compact --predicate '(subsystem == "com.jamf.connect") && (category == "PrivilegeElevation")' >> "$path/Connect_Menubar_Elevation_Logs.txt"
+log show --debug --info --style compact --predicate '(subsystem == "com.jamf.connect") && (category == "PrivilegeElevation")' --last 60m >> "$path/Connect_Menubar_Elevation_Logs.txt"
 
 echo "Log collection complete. Files saved in $path"
 EOF
