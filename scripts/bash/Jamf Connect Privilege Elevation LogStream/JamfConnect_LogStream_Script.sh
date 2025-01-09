@@ -7,11 +7,11 @@ SCRIPT_PATH="$SCRIPT_DIR/my_script.sh"
 # Create the directory if it doesn't exist
 if [ ! -d "$SCRIPT_DIR" ]; then
     echo "Creating directory $SCRIPT_DIR"
-    sudo mkdir -p "$SCRIPT_DIR"
+    mkdir -p "$SCRIPT_DIR"
 fi
 
 # Create the script file
-cat << 'EOF' | sudo tee "$SCRIPT_PATH" > /dev/null
+cat << 'EOF' | tee "$SCRIPT_PATH" > /dev/null
 #!/bin/bash
 
 # Set the path where the log files will be saved
