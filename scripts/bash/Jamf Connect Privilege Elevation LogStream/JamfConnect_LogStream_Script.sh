@@ -45,7 +45,4 @@ EOF
 # Set the correct permissions
 chmod 755 "$SCRIPT_PATH"
 
-# Make the script executable
-chmod +x "$SCRIPT_PATH"
-
 echo "Script has been created at $SCRIPT_PATH and made executable"
