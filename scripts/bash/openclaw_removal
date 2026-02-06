@@ -1,0 +1,575 @@
+#!/bin/bash
+
+################################################################################
+# 
+# Removes all traces of OpenClaw including:
+# - Running processes and services
+# - LaunchAgent services (current and legacy naming)
+# - CLI binaries (npm/pnpm/bun installations)
+# - macOS companion app
+# - Docker containers and images
+# - Configuration directories and credentials
+# - Source installations
+# - Legacy installations (Clawdbot, Moltbot)
+#
+# Usage: [OPTIONS]
+#
+# Options:
+#   --no-backup          Skip creating backups of config directories
+#   --keep-workspace     Preserve workspace directories
+#   --docker-only        Only remove Docker containers/images
+#   --force              Skip all confirmation prompts
+#   --dry-run            Show what would be removed without actually removing
+#
+################################################################################
+
+set -e
+
+# Command line arguments
+NO_BACKUP=false
+KEEP_WORKSPACE=false
+DOCKER_ONLY=false
+FORCE=false
+DRY_RUN=false
+
+# Parse arguments
+while [[ $# -gt 0 ]]; do
+    case $1 in
+        --no-backup)
+            NO_BACKUP=true
+            shift
+            ;;
+        --keep-workspace)
+            KEEP_WORKSPACE=true
+            shift
+            ;;
+        --docker-only)
+            DOCKER_ONLY=true
+            shift
+            ;;
+        --force)
+            FORCE=true
+            shift
+            ;;
+        --dry-run)
+            DRY_RUN=true
+            shift
+            ;;
+        *)
+            echo "Unknown option: $1"
+            echo "Usage: $0 [--no-backup] [--keep-workspace] [--docker-only] [--force] [--dry-run]"
+            exit 1
+            ;;
+    esac
+done
+
+# Logging function
+log() {
+    echo "[INFO] $1"
+}
+
+warn() {
+    echo "[WARN] $1"
+}
+
+error() {
+    echo "[ERROR] $1"
+}
+
+info() {
+    echo "[STEP] $1"
+}
+
+# Check if command exists
+command_exists() {
+    command -v "$1" >/dev/null 2>&1
+}
+
+# Execute or show command based on dry-run mode
+execute() {
+    if [[ "$DRY_RUN" == true ]]; then
+        echo "[DRY-RUN] Would execute: $*"
+    else
+        "$@"
+    fi
+}
+
+# Ask for confirmation
+confirm() {
+    if [[ "$FORCE" == true ]]; then
+        return 0
+    fi
+    
+    local prompt="$1"
+    read -p "$prompt (y/N): " -n 1 -r
+    echo
+    [[ $REPLY =~ ^[Yy]$ ]]
+}
+
+# Banner
+echo "╔════════════════════════════════════════════════════════════════╗"
+echo "║        OpenClaw Complete Removal Script v1.0                  ║"
+echo "║        Removes all traces of OpenClaw/Moltbot/Clawdbot        ║"
+echo "╚════════════════════════════════════════════════════════════════╝"
+echo
+
+# Check if running as root for some operations
+if [[ $EUID -ne 0 ]] && [[ "$DOCKER_ONLY" == false ]]; then
+    warn "This script may need sudo privileges for complete removal."
+    warn "Some operations might fail without elevated privileges."
+    echo
+fi
+
+################################################################################
+# STEP 1: STOP ALL RUNNING PROCESSES
+################################################################################
+
+if [[ "$DOCKER_ONLY" == false ]]; then
+    info "STEP 1: Stopping all OpenClaw processes..."
+    
+    # Kill processes by name (all naming variants)
+    for process_name in openclaw moltbot clawdbot clawd; do
+        if pgrep -f "$process_name" >/dev/null 2>&1; then
+            log "Found running $process_name processes"
+            if confirm "Stop $process_name processes?"; then
+                execute pkill -9 -f "$process_name" || warn "Failed to kill $process_name processes"
+            fi
+        fi
+    done
+    
+    # Kill node processes running openclaw
+    if pgrep -f "node.*openclaw" >/dev/null 2>&1; then
+        log "Found Node.js processes running OpenClaw"
+        if confirm "Stop Node.js OpenClaw processes?"; then
+            execute pkill -9 -f "node.*openclaw" || warn "Failed to kill Node processes"
+        fi
+    fi
+    
+    log "Process cleanup complete"
+    echo
+fi
+
+################################################################################
+# STEP 2: REMOVE LAUNCHAGENT SERVICES
+################################################################################
+
+if [[ "$DOCKER_ONLY" == false ]]; then
+    info "STEP 2: Removing LaunchAgent services..."
+    
+    for user_home in /Users/*; do
+        [[ ! -d "$user_home" ]] && continue
+        [[ "$user_home" == "/Users/Shared" ]] && continue
+        
+        username=$(basename "$user_home")
+        launch_agents_dir="$user_home/Library/LaunchAgents"
+        
+        # Current naming convention: bot.molt.gateway
+        if [[ -f "$launch_agents_dir/bot.molt.gateway.plist" ]]; then
+            log "Found LaunchAgent for user: $username (bot.molt.gateway)"
+            if confirm "Remove LaunchAgent for $username?"; then
+                # Unload service
+                execute sudo -u "$username" launchctl unload "$launch_agents_dir/bot.molt.gateway.plist" 2>/dev/null || true
+                execute sudo -u "$username" launchctl bootout "gui/$(id -u $username)/bot.molt.gateway" 2>/dev/null || true
+                # Remove plist
+                execute rm -f "$launch_agents_dir/bot.molt.gateway.plist"
+            fi
+        fi
+        
+        # Legacy naming: com.openclaw.gateway
+        if [[ -f "$launch_agents_dir/com.openclaw.gateway.plist" ]]; then
+            log "Found legacy LaunchAgent for user: $username (com.openclaw.gateway)"
+            if confirm "Remove legacy LaunchAgent for $username?"; then
+                execute sudo -u "$username" launchctl unload "$launch_agents_dir/com.openclaw.gateway.plist" 2>/dev/null || true
+                execute sudo -u "$username" launchctl bootout "gui/$(id -u $username)/com.openclaw.gateway" 2>/dev/null || true
+                execute rm -f "$launch_agents_dir/com.openclaw.gateway.plist"
+            fi
+        fi
+        
+        # Legacy clawdbot naming
+        if [[ -f "$launch_agents_dir/com.clawdbot.gateway.plist" ]]; then
+            log "Found Clawdbot LaunchAgent for user: $username"
+            if confirm "Remove Clawdbot LaunchAgent for $username?"; then
+                execute sudo -u "$username" launchctl unload "$launch_agents_dir/com.clawdbot.gateway.plist" 2>/dev/null || true
+                execute sudo -u "$username" launchctl bootout "gui/$(id -u $username)/com.clawdbot.gateway" 2>/dev/null || true
+                execute rm -f "$launch_agents_dir/com.clawdbot.gateway.plist"
+            fi
+        fi
+        
+        # Profile-based agents (bot.molt.*)
+        for plist in "$launch_agents_dir"/bot.molt.*.plist; do
+            [[ ! -f "$plist" ]] && continue
+            profile_name=$(basename "$plist" .plist)
+            log "Found profile-based LaunchAgent: $profile_name for $username"
+            if confirm "Remove $profile_name LaunchAgent?"; then
+                execute sudo -u "$username" launchctl unload "$plist" 2>/dev/null || true
+                execute sudo -u "$username" launchctl bootout "gui/$(id -u $username)/$profile_name" 2>/dev/null || true
+                execute rm -f "$plist"
+            fi
+        done
+    done
+    
+    log "LaunchAgent cleanup complete"
+    echo
+fi
+
+################################################################################
+# STEP 3: REMOVE CLI BINARIES
+################################################################################
+
+if [[ "$DOCKER_ONLY" == false ]]; then
+    info "STEP 3: Removing CLI binaries..."
+    
+    # Try official uninstall command first
+    if command_exists openclaw; then
+        log "Found openclaw CLI command"
+        if confirm "Run official openclaw uninstall command?"; then
+            execute openclaw uninstall --all --yes --non-interactive || warn "Official uninstall failed, continuing with manual removal"
+        fi
+    fi
+    
+    # Remove npm global installations
+    if command_exists npm; then
+        npm_prefix=$(npm prefix -g 2>/dev/null || echo "")
+        if [[ -n "$npm_prefix" ]] && [[ -f "$npm_prefix/bin/openclaw" ]]; then
+            log "Found npm global installation at: $npm_prefix"
+            if confirm "Remove npm global openclaw package?"; then
+                execute npm rm -g openclaw 2>/dev/null || warn "npm removal failed"
+            fi
+        fi
+    fi
+    
+    # Remove pnpm global installations
+    if command_exists pnpm; then
+        if pnpm list -g 2>/dev/null | grep -q openclaw; then
+            log "Found pnpm global installation"
+            if confirm "Remove pnpm global openclaw package?"; then
+                execute pnpm remove -g openclaw 2>/dev/null || warn "pnpm removal failed"
+            fi
+        fi
+    fi
+    
+    # Remove bun global installations
+    if command_exists bun; then
+        if bun pm ls -g 2>/dev/null | grep -q openclaw; then
+            log "Found bun global installation"
+            if confirm "Remove bun global openclaw package?"; then
+                execute bun remove -g openclaw 2>/dev/null || warn "bun removal failed"
+            fi
+        fi
+    fi
+    
+    # Remove any remaining binary in standard locations
+    for bin_path in /usr/local/bin/openclaw /opt/homebrew/bin/openclaw; do
+        if [[ -f "$bin_path" ]]; then
+            log "Found binary at: $bin_path"
+            if confirm "Remove binary at $bin_path?"; then
+                execute rm -f "$bin_path"
+            fi
+        fi
+    done
+    
+    log "CLI binary cleanup complete"
+    echo
+fi
+
+################################################################################
+# STEP 4: REMOVE MACOS APP
+################################################################################
+
+if [[ "$DOCKER_ONLY" == false ]]; then
+    info "STEP 4: Removing macOS application..."
+    
+    # Remove from /Applications
+    if [[ -d "/Applications/OpenClaw.app" ]]; then
+        log "Found OpenClaw.app in /Applications"
+        if confirm "Remove OpenClaw.app from /Applications?"; then
+            execute rm -rf "/Applications/OpenClaw.app"
+        fi
+    fi
+    
+    # Check user Applications folders
+    for user_home in /Users/*; do
+        [[ ! -d "$user_home" ]] && continue
+        [[ "$user_home" == "/Users/Shared" ]] && continue
+        
+        username=$(basename "$user_home")
+        if [[ -d "$user_home/Applications/OpenClaw.app" ]]; then
+            log "Found OpenClaw.app in $username's Applications folder"
+            if confirm "Remove OpenClaw.app for user $username?"; then
+                execute rm -rf "$user_home/Applications/OpenClaw.app"
+            fi
+        fi
+    done
+    
+    log "macOS app cleanup complete"
+    echo
+fi
+
+################################################################################
+# STEP 5: REMOVE DOCKER CONTAINERS AND IMAGES
+################################################################################
+
+info "STEP 5: Removing Docker containers and images..."
+
+if command_exists docker; then
+    # Stop and remove running containers
+    running_containers=$(docker ps -q --filter "name=openclaw" 2>/dev/null || echo "")
+    if [[ -n "$running_containers" ]]; then
+        log "Found running OpenClaw containers"
+        if confirm "Stop and remove running OpenClaw containers?"; then
+            for container in $running_containers; do
+                execute docker stop "$container"
+                execute docker rm "$container"
+            done
+        fi
+    fi
+    
+    # Remove all containers (including stopped)
+    all_containers=$(docker ps -aq --filter "name=openclaw" 2>/dev/null || echo "")
+    if [[ -n "$all_containers" ]]; then
+        log "Found stopped OpenClaw containers"
+        if confirm "Remove stopped OpenClaw containers?"; then
+            for container in $all_containers; do
+                execute docker rm "$container"
+            done
+        fi
+    fi
+    
+    # Remove Docker images
+    openclaw_images=$(docker images --format "{{.Repository}}:{{.Tag}}" | grep -i openclaw || echo "")
+    if [[ -n "$openclaw_images" ]]; then
+        log "Found OpenClaw Docker images"
+        if confirm "Remove OpenClaw Docker images?"; then
+            while IFS= read -r image; do
+                execute docker rmi "$image"
+            done <<< "$openclaw_images"
+        fi
+    fi
+    
+    # Check for docker-compose installations
+    for user_home in /Users/*; do
+        [[ ! -d "$user_home" ]] && continue
+        [[ "$user_home" == "/Users/Shared" ]] && continue
+        
+        if [[ -f "$user_home/openclaw/docker-compose.yml" ]]; then
+            username=$(basename "$user_home")
+            log "Found docker-compose installation for user: $username"
+            if confirm "Remove docker-compose setup for $username?"; then
+                cd "$user_home/openclaw" && execute docker-compose down 2>/dev/null || true
+            fi
+        fi
+    done
+    
+    log "Docker cleanup complete"
+else
+    warn "Docker not found, skipping Docker cleanup"
+fi
+
+echo
+
+################################################################################
+# STEP 6: BACKUP AND REMOVE CONFIGURATION DIRECTORIES
+################################################################################
+
+if [[ "$DOCKER_ONLY" == false ]]; then
+    info "STEP 6: Removing configuration directories..."
+    
+    BACKUP_DIR="/tmp/openclaw_backup_$(date +%Y%m%d_%H%M%S)"
+    
+    if [[ "$NO_BACKUP" == false ]] && [[ "$DRY_RUN" == false ]]; then
+        log "Backups will be created in: $BACKUP_DIR"
+        mkdir -p "$BACKUP_DIR"
+    fi
+    
+    for user_home in /Users/*; do
+        [[ ! -d "$user_home" ]] && continue
+        [[ "$user_home" == "/Users/Shared" ]] && continue
+        
+        username=$(basename "$user_home")
+        
+        # Check for all possible config directory names
+        for config_dir in ".openclaw" ".moltbot" ".clawdbot" ".molthub"; do
+            if [[ -d "$user_home/$config_dir" ]]; then
+                log "Found $config_dir directory for user: $username"
+                
+                # Create backup if enabled
+                if [[ "$NO_BACKUP" == false ]] && [[ "$DRY_RUN" == false ]]; then
+                    log "Creating backup of $config_dir..."
+                    execute cp -R "$user_home/$config_dir" "$BACKUP_DIR/${username}_${config_dir}" || warn "Backup failed"
+                fi
+                
+                if confirm "Remove $config_dir directory for $username?"; then
+                    if [[ "$KEEP_WORKSPACE" == true ]] && [[ -d "$user_home/$config_dir/workspace" ]]; then
+                        log "Preserving workspace directory..."
+                        workspace_backup="$user_home/${config_dir}_workspace_backup_$(date +%Y%m%d)"
+                        execute cp -R "$user_home/$config_dir/workspace" "$workspace_backup"
+                        warn "Workspace backed up to: $workspace_backup"
+                    fi
+                    execute rm -rf "$user_home/$config_dir"
+                fi
+            fi
+        done
+        
+        # Check for separate workspace directory (Docker installations)
+        if [[ -d "$user_home/openclaw/workspace" ]]; then
+            log "Found separate workspace directory for user: $username"
+            if [[ "$KEEP_WORKSPACE" == false ]]; then
+                if confirm "Remove workspace directory for $username?"; then
+                    execute rm -rf "$user_home/openclaw"
+                fi
+            else
+                warn "Keeping workspace directory as requested"
+            fi
+        fi
+    done
+    
+    if [[ "$NO_BACKUP" == false ]] && [[ "$DRY_RUN" == false ]] && [[ -d "$BACKUP_DIR" ]]; then
+        log "Backups saved to: $BACKUP_DIR"
+        log "You can safely delete this directory after verifying removal"
+    fi
+    
+    log "Configuration cleanup complete"
+    echo
+fi
+
+################################################################################
+# STEP 7: REMOVE SOURCE INSTALLATIONS
+################################################################################
+
+if [[ "$DOCKER_ONLY" == false ]]; then
+    info "STEP 7: Removing source installations..."
+    
+    for user_home in /Users/*; do
+        [[ ! -d "$user_home" ]] && continue
+        [[ "$user_home" == "/Users/Shared" ]] && continue
+        
+        username=$(basename "$user_home")
+        
+        # Check common source installation locations
+        for source_dir in "$user_home/openclaw" "$user_home/Documents/openclaw" "$user_home/Projects/openclaw" "$user_home/src/openclaw" "$user_home/Developer/openclaw"; do
+            if [[ -d "$source_dir" ]] && [[ -f "$source_dir/package.json" ]]; then
+                # Verify it's actually openclaw
+                if grep -q '"name": "openclaw"' "$source_dir/package.json" 2>/dev/null; then
+                    log "Found source installation for user $username at: $source_dir"
+                    if confirm "Remove source installation at $source_dir?"; then
+                        execute rm -rf "$source_dir"
+                    fi
+                fi
+            fi
+        done
+    done
+    
+    log "Source installation cleanup complete"
+    echo
+fi
+
+################################################################################
+# STEP 8: OAUTH TOKEN REVOCATION INSTRUCTIONS
+################################################################################
+
+if [[ "$DRY_RUN" == false ]]; then
+    info "STEP 8: OAuth Token Revocation"
+    echo
+    warn "IMPORTANT: OpenClaw uses OAuth tokens that persist on provider servers."
+    warn "You must manually revoke these tokens to fully secure your accounts."
+    echo
+    echo "To revoke OAuth tokens, visit the following URLs:"
+    echo
+    echo "  Google/Gmail:"
+    echo "    https://myaccount.google.com/permissions"
+    echo "    Look for 'OpenClaw', 'Moltbot', or 'Clawdbot' and remove access"
+    echo
+    echo "  Slack:"
+    echo "    https://[your-workspace].slack.com/apps/manage"
+    echo "    Find and remove the OpenClaw/Moltbot/Clawdbot app"
+    echo
+    echo "  Discord:"
+    echo "    User Settings → Authorized Apps"
+    echo "    Revoke any OpenClaw/Moltbot/Clawdbot applications"
+    echo
+    echo "  Microsoft:"
+    echo "    https://account.microsoft.com/privacy/app-access"
+    echo "    Remove OpenClaw/Moltbot/Clawdbot permissions"
+    echo
+    echo "  Telegram:"
+    echo "    Chat with @BotFather"
+    echo "    Use /revoke command to revoke bot tokens"
+    echo
+    echo "  GitHub:"
+    echo "    Settings → Developer settings → Personal access tokens"
+    echo "    Revoke any tokens created for OpenClaw"
+    echo
+    echo "  API Keys:"
+    echo "    - Anthropic: https://console.anthropic.com/settings/keys"
+    echo "    - OpenAI: https://platform.openai.com/api-keys"
+    echo "    - Google AI Studio: https://aistudio.google.com/app/apikey"
+    echo "    Rotate or delete any keys used exclusively by OpenClaw"
+    echo
+fi
+
+################################################################################
+# FINAL VERIFICATION
+################################################################################
+
+if [[ "$DRY_RUN" == false ]]; then
+    echo
+    info "STEP 9: Final Verification"
+    echo
+    
+    # Check for remaining processes
+    if pgrep -f "openclaw\|moltbot\|clawdbot" >/dev/null 2>&1; then
+        warn "Some OpenClaw processes are still running!"
+        warn "You may need to restart your system or manually kill them."
+    else
+        log "✓ No OpenClaw processes running"
+    fi
+    
+    # Check for remaining LaunchAgents
+    remaining_agents=$(find /Users/*/Library/LaunchAgents -name "*openclaw*" -o -name "*moltbot*" -o -name "*clawdbot*" -o -name "bot.molt.*" 2>/dev/null | wc -l)
+    if [[ $remaining_agents -gt 0 ]]; then
+        warn "Found $remaining_agents remaining LaunchAgent(s)"
+    else
+        log "✓ All LaunchAgents removed"
+    fi
+    
+    # Check for remaining config directories
+    remaining_configs=$(find /Users -maxdepth 2 -name ".openclaw" -o -name ".moltbot" -o -name ".clawdbot" 2>/dev/null | wc -l)
+    if [[ $remaining_configs -gt 0 ]]; then
+        warn "Found $remaining_configs remaining configuration director(y/ies)"
+    else
+        log "✓ All configuration directories removed"
+    fi
+    
+    # Check for CLI command
+    if command_exists openclaw; then
+        warn "openclaw command still accessible in PATH"
+        warn "You may need to restart your terminal or logout/login"
+    else
+        log "✓ openclaw CLI command removed"
+    fi
+    
+    # Check Docker
+    if command_exists docker; then
+        docker_count=$(docker ps -a --filter "name=openclaw" 2>/dev/null | wc -l)
+        if [[ $docker_count -gt 1 ]]; then
+            warn "Found remaining Docker containers"
+        else
+            log "✓ No OpenClaw Docker containers found"
+        fi
+    fi
+    
+    echo
+    log "═══════════════════════════════════════════════════════════════"
+    log "                 OpenClaw Removal Complete!                   "
+    log "═══════════════════════════════════════════════════════════════"
+    echo
+    warn "COMPLETED:"
+    echo
+    if [[ "$NO_BACKUP" == false ]] && [[ -d "$BACKUP_DIR" ]]; then
+        log "Configuration backups saved to: $BACKUP_DIR"
+        log "Delete this directory once you've verified everything is working correctly"
+    fi
+    echo
+fi
+
+exit 0
